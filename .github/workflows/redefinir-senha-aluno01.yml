@@ -1,0 +1,67 @@
+
+name: Redefinir senha do aluno01
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  redefinir:
+    if: github.actor == 'sousamilo3-hash'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Instalar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Instalar Firebase Admin
+        run: npm install --no-save --no-package-lock firebase-admin@13
+
+      - name: Redefinir senha
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          ALUNO01_NOVA_SENHA: ${{ secrets.ALUNO01_NOVA_SENHA }}
+        run: |
+          node <<'NODE'
+          const admin = require('firebase-admin');
+
+          async function main() {
+            const uid = 'vfebTGd8U6fd7TmaX5uThhyQPfV2';
+            const email = 'aluno01@alunos.cah-agenda.invalid';
+            const password = process.env.ALUNO01_NOVA_SENHA || '';
+            const json = process.env.FIREBASE_SERVICE_ACCOUNT;
+
+            if (!json) throw Error('Credencial Firebase ausente.');
+            if (password.length < 12 || password.length > 128) {
+              throw Error('A senha deve ter de 12 a 128 caracteres.');
+            }
+
+            const credential = JSON.parse(json);
+            if (credential.project_id !== 'cah-agenda') {
+              throw Error('Projeto Firebase incorreto.');
+            }
+
+            admin.initializeApp({
+              credential: admin.credential.cert(credential)
+            });
+
+            const user = await admin.auth().getUser(uid);
+            if (user.email?.toLowerCase() !== email || user.disabled) {
+              throw Error('Conta não corresponde ou está desativada.');
+            }
+
+            await admin.auth().updateUser(uid, {password});
+            console.log('Senha atualizada com sucesso.');
+          }
+
+          main().catch(error => {
+            console.error(error.message);
+            process.exitCode = 1;
+          });
+          NODE
+          
