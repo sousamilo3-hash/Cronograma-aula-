@@ -1,0 +1,92 @@
+name: Redefinir senha individual de aluno
+
+on:
+  workflow_dispatch:
+    inputs:
+      aluno_id:
+        description: 'Identificador do aluno (ex.: aluno01) — não informe e-mail nem senha'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  redefinir:
+    # Só o proprietário informado pode executar; sempre pela branch principal.
+    if: ${{ github.actor == 'sousamilo3-hash' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Preparar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Instalar Firebase Admin SDK
+        run: npm install --no-save --no-package-lock --no-audit --no-fund firebase-admin@13
+
+      - name: Redefinir apenas a senha do aluno selecionado
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          SENHA_INDIVIDUAL_ALUNO: ${{ secrets.SENHA_INDIVIDUAL_ALUNO }}
+          ALUNO_ID: ${{ inputs.aluno_id }}
+        run: |
+          node <<'NODE'
+          const admin = require('firebase-admin');
+
+          async function main() {
+            const alunoId = (process.env.ALUNO_ID || '').trim();
+            const password = process.env.SENHA_INDIVIDUAL_ALUNO || '';
+            const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT || '';
+
+            if (!/^[A-Za-z0-9_-]{2,60}$/.test(alunoId)) {
+              throw new Error('Identificador de aluno inválido. Exemplo: aluno01.');
+            }
+            if (password.length < 12 || password.length > 128) {
+              throw new Error('A senha deve ter de 12 a 128 caracteres. Atualize o segredo SENHA_INDIVIDUAL_ALUNO.');
+            }
+            if (!serviceAccountJson) {
+              throw new Error('Falta configurar o segredo FIREBASE_SERVICE_ACCOUNT.');
+            }
+
+            const serviceAccount = JSON.parse(serviceAccountJson);
+            if (serviceAccount.project_id !== 'cah-agenda') {
+              throw new Error('A credencial não pertence ao projeto cah-agenda.');
+            }
+            admin.initializeApp({credential: admin.credential.cert(serviceAccount)});
+
+            // A procura acontece na coleção de perfis, nunca por e-mail digitado.
+            const profiles = await admin.firestore()
+              .collection('perfis_alunos')
+              .where('alunoId', '==', alunoId)
+              .limit(2)
+              .get();
+            if (profiles.size !== 1) {
+              throw new Error('Aluno não encontrado ou identificador duplicado em perfis_alunos. Nenhuma senha foi alterada.');
+            }
+
+            const profile = profiles.docs[0];
+            const uid = profile.id;
+            if (uid === 'AD21XOau1XZHMOyyiNSg9eoHitz1') {
+              throw new Error('Conta administrativa protegida.');
+            }
+            if (profile.get('ativo') !== true) {
+              throw new Error('Perfil do aluno não está ativo.');
+            }
+
+            const user = await admin.auth().getUser(uid);
+            if (user.disabled) {
+              throw new Error('Conta do aluno desativada no Firebase Authentication.');
+            }
+            await admin.auth().updateUser(uid, {password});
+            // Invalida refresh tokens antigos após a redefinição.
+            await admin.auth().revokeRefreshTokens(uid);
+            console.log('Senha redefinida com sucesso para o identificador: ' + alunoId);
+          }
+
+          main().catch(error => {
+            console.error('Falha: ' + error.message);
+            process.exitCode = 1;
+          });
+          NODE
